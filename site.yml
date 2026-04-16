@@ -1,0 +1,170 @@
+---
+# ============================================================
+# site.yml – Full stack deployment (runs on EVERY VM)
+#
+# Each VM gets the full stack:
+#   - MySQL        (installed on host, port 3306)
+#   - Backend      (Docker container, port 3000)
+#   - Frontend     (Docker container, port 80)
+#
+# The frontend talks to the backend on the SAME VM (localhost).
+#
+# Run: ansible-playbook site.yml
+# ============================================================
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# PLAY 1 – Install MySQL on every VM
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- name: "PLAY 1 | Install MySQL on all VMs"
+  hosts: all_vms
+
+  vars:
+    db_name: appdb
+    db_user: appuser
+    db_pass: apppass
+
+  tasks:
+
+    - name: Install MySQL server
+      ansible.builtin.package:
+        name: mysql-server
+        state: present
+
+    - name: Install PyMySQL (needed by Ansible MySQL modules)
+      ansible.builtin.package:
+        name: python3-pymysql
+        state: present
+
+    - name: Start and enable MySQL
+      ansible.builtin.service:
+        name: mysql
+        state: started
+        enabled: true
+
+    - name: Render init.sql from template
+      ansible.builtin.template:
+        src: templates/init.sql.j2
+        dest: /tmp/init.sql
+        mode: "0600"
+
+    - name: Run init.sql (creates DB, user, seed data)
+      ansible.builtin.command: mysql -u root < /tmp/init.sql
+      changed_when: false
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# PLAY 2 – Build images + start all containers via docker compose
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- name: "PLAY 2 | Deploy containers on all VMs"
+  hosts: all_vms
+
+  vars:
+    db_name: appdb
+    db_user: appuser
+    db_pass: apppass
+    backend_port: 3000
+    frontend_port: 80
+    backend_host: "127.0.0.1"
+    compose_dir: /opt/compose
+    backend_build_dir: /opt/backend
+    frontend_build_dir: /opt/frontend
+
+  tasks:
+
+    # ── Docker setup ─────────────────────────────────────────
+    - name: Install Docker
+      ansible.builtin.package:
+        name: docker.io
+        state: present
+
+    - name: Install docker-compose plugin (Ubuntu)
+      ansible.builtin.package:
+        name: docker-compose-v2
+        state: present
+
+    - name: Start and enable Docker
+      ansible.builtin.service:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Add ansible user to docker group
+      ansible.builtin.user:
+        name: "{{ ansible_user }}"
+        groups: docker
+        append: true
+
+    # ── Build backend image ──────────────────────────────────
+    - name: Upload backend source to VM
+      ansible.builtin.copy:
+        src: backend/
+        dest: "{{ backend_build_dir }}/"
+        mode: "0644"
+
+    - name: Build backend Docker image
+      ansible.builtin.command: docker build -t backend:latest {{ backend_build_dir }}
+      changed_when: true
+
+    # ── Build frontend image ─────────────────────────────────
+    - name: Upload frontend source to VM
+      ansible.builtin.copy:
+        src: frontend/
+        dest: "{{ frontend_build_dir }}/"
+        mode: "0644"
+
+    - name: Render config.js (injects backend IP)
+      ansible.builtin.template:
+        src: templates/frontend_config.js.j2
+        dest: "{{ frontend_build_dir }}/config.js"
+        mode: "0644"
+
+    - name: Build frontend Docker image
+      ansible.builtin.command: docker build -t frontend:latest {{ frontend_build_dir }}
+      changed_when: true
+
+    # ── Deploy with docker compose ───────────────────────────
+    - name: Create compose directory
+      ansible.builtin.file:
+        path: "{{ compose_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Render docker-compose.yml
+      ansible.builtin.template:
+        src: templates/compose.yml.j2
+        dest: "{{ compose_dir }}/docker-compose.yml"
+        mode: "0644"
+
+    - name: Start all containers with docker compose
+      ansible.builtin.command: docker compose up -d --remove-orphans
+      args:
+        chdir: "{{ compose_dir }}"
+      changed_when: true
+
+    # ── Health checks ────────────────────────────────────────
+    - name: Wait for backend to be ready
+      ansible.builtin.uri:
+        url: "http://localhost:{{ backend_port }}/api/health"
+        status_code: 200
+      register: health
+      retries: 10
+      delay: 3
+      until: health.status == 200
+
+    - name: Wait for frontend to be ready
+      ansible.builtin.uri:
+        url: "http://localhost:{{ frontend_port }}"
+        status_code: 200
+      register: fe_check
+      retries: 10
+      delay: 3
+      until: fe_check.status == 200
+
+    - name: Print access URL
+      ansible.builtin.debug:
+        msg:
+          - "========================================"
+          - " Deployment complete on {{ inventory_hostname }}!"
+          - " Open → http://{{ ansible_host }}:{{ frontend_port }}"
+          - "========================================"
+
