@@ -23,6 +23,7 @@ x-vars: &shared_vars
   db_name: appdb
   db_user: appuser
   db_pass: apppass
+  sa_pass: "SqlServer@2026!"
   backend_port: 3000
   frontend_port: 80
   backend_host: "127.0.0.1"

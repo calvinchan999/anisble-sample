@@ -13,33 +13,69 @@
 # ============================================================
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# PLAY 1 – Install MySQL on every VM
+# PLAY 1 – Install SQL Server on every VM
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-- name: "PLAY 1 | Install MySQL on all VMs"
+- name: "PLAY 1 | Install SQL Server on all VMs"
   hosts: all_vms
 
   vars:
     db_name: appdb
     db_user: appuser
     db_pass: apppass
+    sa_pass: "SqlServer@2026!"    # SA password – must meet complexity requirements
 
   tasks:
 
-    - name: Install MySQL server
+    - name: Install prerequisites
       ansible.builtin.package:
-        name: mysql-server
+        name: [curl, apt-transport-https, gnupg2]
         state: present
 
-    - name: Install PyMySQL (needed by Ansible MySQL modules)
+    - name: Add Microsoft repository key
+      ansible.builtin.shell: >
+        curl -fsSL https://packages.microsoft.com/keys/microsoft.asc
+        | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg
+      args:
+        creates: /usr/share/keyrings/microsoft-prod.gpg
+
+    - name: Add Microsoft SQL Server repository
+      ansible.builtin.apt_repository:
+        repo: "deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/ubuntu/22.04/mssql-server-2022 jammy main"
+        state: present
+        filename: mssql-server
+
+    - name: Add Microsoft tools repository
+      ansible.builtin.apt_repository:
+        repo: "deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/ubuntu/22.04/prod jammy main"
+        state: present
+        filename: mssql-tools
+
+    - name: Install SQL Server
       ansible.builtin.package:
-        name: python3-pymysql
+        name: mssql-server
         state: present
 
-    - name: Start and enable MySQL
+    - name: Install sqlcmd (mssql-tools18)
+      ansible.builtin.shell: ACCEPT_EULA=Y apt-get install -y mssql-tools18 unixodbc-dev
+      environment:
+        DEBIAN_FRONTEND: noninteractive
+      changed_when: true
+
+    - name: Configure SQL Server (set SA password, Developer edition)
+      ansible.builtin.shell: MSSQL_SA_PASSWORD='{{ sa_pass }}' ACCEPT_EULA=Y /opt/mssql/bin/mssql-conf -n setup developer
+      changed_when: true
+
+    - name: Start and enable SQL Server
       ansible.builtin.service:
-        name: mysql
+        name: mssql-server
         state: started
         enabled: true
+
+    - name: Wait for SQL Server to be ready
+      ansible.builtin.wait_for:
+        port: 1433
+        delay: 5
+        timeout: 60
 
     - name: Render init.sql from template
       ansible.builtin.template:
@@ -47,8 +83,8 @@
         dest: /tmp/init.sql
         mode: "0600"
 
-    - name: Run init.sql (creates DB, user, seed data)
-      ansible.builtin.command: mysql -u root < /tmp/init.sql
+    - name: Run init.sql (creates DB, login, user, seed data)
+      ansible.builtin.shell: /opt/mssql-tools18/bin/sqlcmd -S localhost -U SA -P '{{ sa_pass }}' -C -i /tmp/init.sql
       changed_when: false
 
 
@@ -62,9 +98,10 @@
     db_name: appdb
     db_user: appuser
     db_pass: apppass
+    sa_pass: "SqlServer@2026!"    # must match PLAY 1
     backend_port: 3000
     frontend_port: 80
-    backend_host: "127.0.0.1"
+    backend_host: "{{ ansible_host }}"   # VM's real IP – injected into config.js
     compose_dir: /opt/compose
     backend_build_dir: /opt/backend
     frontend_build_dir: /opt/frontend
@@ -125,7 +162,7 @@
     # ── Deploy with docker compose ───────────────────────────
     - name: Create compose directory
       ansible.builtin.file:
-        path: "{{ compose_dir }}"
+        path: "{{ compose_di
         state: directory
         mode: "0755"
 

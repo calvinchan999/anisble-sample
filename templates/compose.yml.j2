@@ -13,9 +13,9 @@ services:
     image: backend:latest
     container_name: backend
     restart: unless-stopped
-    network_mode: host
     environment:
-      DB_HOST: "127.0.0.1"
+      DB_HOST: "172.17.0.1"   # Docker bridge gateway = host machine (where SQL Server runs)
+      DB_PORT: "1433"
       DB_USER: "{{ db_user }}"
       DB_PASS: "{{ db_pass }}"
       DB_NAME: "{{ db_name }}"

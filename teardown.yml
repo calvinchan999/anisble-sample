@@ -1,0 +1,133 @@
+---
+# ============================================================
+# teardown.yml – Remove everything installed by site.yml
+#
+# Removes:
+#   - Frontend + Backend Docker containers
+#   - Docker images (frontend, backend)
+#   - Docker + docker-compose plugin
+#   - SQL Server (mssql-server + tools)
+#   - Microsoft apt repositories
+#   - All files deployed to /opt/
+#
+# Run: ansible-playbook teardown.yml
+# ============================================================
+
+- name: "TEARDOWN | Remove all deployed resources"
+  hosts: all_vms
+
+  tasks:
+
+    # ── Stop + remove containers ─────────────────────────────
+    - name: Stop and remove all containers via docker compose
+      ansible.builtin.command: docker compose down --remove-orphans
+      args:
+        chdir: /opt/compose
+      failed_when: false
+      changed_when: false
+
+    - name: Remove frontend Docker image
+      ansible.builtin.command: docker rmi -f frontend:latest
+      failed_when: false
+      changed_when: false
+
+    - name: Remove backend Docker image
+      ansible.builtin.command: docker rmi -f backend:latest
+      failed_when: false
+      changed_when: false
+
+    # ── Remove Docker ────────────────────────────────────────
+    - name: Remove docker-compose-v2 package
+      ansible.builtin.package:
+        name: docker-compose-v2
+        state: absent
+
+    - name: Remove Docker package
+      ansible.builtin.package:
+        name: docker.io
+        state: absent
+
+    - name: Remove Docker data directory
+      ansible.builtin.file:
+        path: /var/lib/docker
+        state: absent
+
+    # ── Stop + remove SQL Server ─────────────────────────────
+    - name: Stop SQL Server service
+      ansible.builtin.service:
+        name: mssql-server
+        state: stopped
+        enabled: false
+      failed_when: false
+
+    - name: Remove mssql-server package
+      ansible.builtin.package:
+        name: mssql-server
+        state: absent
+
+    - name: Remove mssql-tools18 and unixodbc-dev
+      ansible.builtin.package:
+        name:
+          - mssql-tools18
+          - unixodbc-dev
+        state: absent
+
+    - name: Remove SQL Server data directory
+      ansible.builtin.file:
+        path: /var/opt/mssql
+        state: absent
+
+    # ── Remove Microsoft apt repositories ───────────────────
+    - name: Remove mssql-server apt repo file
+      ansible.builtin.file:
+        path: /etc/apt/sources.list.d/mssql-server.list
+        state: absent
+
+    - name: Remove mssql-tools apt repo file
+      ansible.builtin.file:
+        path: /etc/apt/sources.list.d/mssql-tools.list
+        state: absent
+
+    - name: Remove Microsoft GPG key
+      ansible.builtin.file:
+        path: /usr/share/keyrings/microsoft-prod.gpg
+        state: absent
+
+    - name: Run apt autoremove to clean up leftover packages
+      ansible.builtin.apt:
+        autoremove: true
+        purge: true
+
+    - name: Run apt autoclean
+      ansible.builtin.apt:
+        autoclean: true
+
+    # ── Remove deployed files ────────────────────────────────
+    - name: Remove /opt/compose
+      ansible.builtin.file:
+        path: /opt/compose
+        state: absent
+
+    - name: Remove /opt/backend
+      ansible.builtin.file:
+        path: /opt/backend
+        state: absent
+
+    - name: Remove /opt/frontend
+      ansible.builtin.file:
+        path: /opt/frontend
+        state: absent
+
+    - name: Remove /tmp/init.sql
+      ansible.builtin.file:
+        path: /tmp/init.sql
+        state: absent
+
+    # ── Done ─────────────────────────────────────────────────
+    - name: Teardown complete
+      ansible.builtin.debug:
+        msg:
+          - "========================================"
+          - " Teardown complete on {{ inventory_hostname }}"
+          - " You can now re-run: ansible-playbook site.yml"
+          - "========================================"
