@@ -26,10 +26,53 @@
 
   tasks:
 
-    - name: Install prerequisites
-      ansible.builtin.package:
+    - name: Update apt cache and install prerequisites
+      ansible.builtin.apt:
         name: [curl, apt-transport-https, gnupg2]
         state: present
+        update_cache: true
+
+    - name: Install OpenLDAP library and create symlinks for SQL Server
+      ansible.builtin.shell: |
+        set -e
+        LIB_DIR=/usr/lib/x86_64-linux-gnu
+
+        # Install whichever libldap package is available
+        apt-get install -y libldap-common 2>/dev/null || true
+        apt-cache search libldap | head -5
+        PKG=$(dpkg -l 'libldap*' 2>/dev/null | awk '/^ii/{print $2}' | head -1)
+        if [ -z "$PKG" ]; then
+          # Force install via pattern
+          apt-get install -y $(apt-cache pkgnames libldap | head -1) || true
+        fi
+
+        echo "=== All liblber/libldap files ==="
+        find /usr/lib -name 'liblber*' -o -name 'libldap*' 2>/dev/null || true
+
+        # Create symlinks – search broadly for any liblber/libldap .so file
+        LBER=$(find /usr/lib -name 'liblber*.so*' -type f -o -name 'liblber*.so*' -type l 2>/dev/null | head -1)
+        LDAP=$(find /usr/lib -name 'libldap*.so*' -type f -o -name 'libldap*.so*' -type l 2>/dev/null | head -1)
+
+        echo "Found LBER: $LBER"
+        echo "Found LDAP: $LDAP"
+
+        if [ -n "$LBER" ]; then
+          ln -sf "$LBER" $LIB_DIR/liblber-2.5.so.0
+        else
+          echo "WARNING: No liblber found, SQL Server may fail to start"
+        fi
+        if [ -n "$LDAP" ]; then
+          ln -sf "$LDAP" $LIB_DIR/libldap-2.5.so.0
+        else
+          echo "WARNING: No libldap found, SQL Server may fail to start"
+        fi
+        ldconfig
+      register: ldap_result
+      changed_when: true
+
+    - name: Show OpenLDAP library detection output
+      ansible.builtin.debug:
+        msg: "{{ ldap_result.stdout_lines }}"
 
     - name: Add Microsoft repository key
       ansible.builtin.shell: >
@@ -40,13 +83,13 @@
 
     - name: Add Microsoft SQL Server repository
       ansible.builtin.apt_repository:
-        repo: "deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/ubuntu/22.04/mssql-server-2022 jammy main"
+        repo: "deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/ubuntu/24.04/mssql-server-2025 noble main"
         state: present
         filename: mssql-server
 
     - name: Add Microsoft tools repository
       ansible.builtin.apt_repository:
-        repo: "deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/ubuntu/22.04/prod jammy main"
+        repo: "deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/ubuntu/24.04/prod noble main"
         state: present
         filename: mssql-tools
 
@@ -61,9 +104,50 @@
         DEBIAN_FRONTEND: noninteractive
       changed_when: true
 
-    - name: Configure SQL Server (set SA password, Developer edition)
-      ansible.builtin.shell: MSSQL_SA_PASSWORD='{{ sa_pass }}' ACCEPT_EULA=Y /opt/mssql/bin/mssql-conf -n setup developer
-      changed_when: true
+    # Write mssql.conf directly – sets edition to Developer
+    # This avoids mssql-conf setup which tries to start the service itself
+    - name: Create /var/opt/mssql directory
+      ansible.builtin.file:
+        path: /var/opt/mssql
+        state: directory
+        owner: mssql
+        group: mssql
+        mode: "0700"
+
+    - name: Write mssql.conf (sets Developer edition)
+      ansible.builtin.copy:
+        dest: /var/opt/mssql/mssql.conf
+        owner: mssql
+        group: mssql
+        mode: "0600"
+        content: |
+          [EULA]
+          accepteula = Y
+
+          [sqlagent]
+          enabled = false
+
+    # Pass SA password via systemd environment override
+    # so it is set before SQL Server starts for the first time
+    - name: Create systemd override directory for mssql-server
+      ansible.builtin.file:
+        path: /etc/systemd/system/mssql-server.service.d
+        state: directory
+        mode: "0755"
+
+    - name: Write systemd environment override (SA password + edition)
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/mssql-server.service.d/override.conf
+        mode: "0644"
+        content: |
+          [Service]
+          Environment=MSSQL_SA_PASSWORD={{ sa_pass }}
+          Environment=MSSQL_PID=Developer
+          Environment=ACCEPT_EULA=Y
+
+    - name: Reload systemd daemon
+      ansible.builtin.systemd:
+        daemon_reload: true
 
     - name: Start and enable SQL Server
       ansible.builtin.service:
@@ -71,11 +155,22 @@
         state: started
         enabled: true
 
-    - name: Wait for SQL Server to be ready
+    # Show journal log immediately – helps diagnose startup failures
+    - name: Capture SQL Server journal log
+      ansible.builtin.command: journalctl -u mssql-server --no-pager -n 50
+      register: mssql_journal
+      changed_when: false
+      failed_when: false
+
+    - name: Show SQL Server journal log
+      ansible.builtin.debug:
+        msg: "{{ mssql_journal.stdout_lines }}"
+
+    - name: Wait for SQL Server to be ready (port 1433)
       ansible.builtin.wait_for:
         port: 1433
-        delay: 5
-        timeout: 60
+        delay: 10
+        timeout: 90
 
     - name: Render init.sql from template
       ansible.builtin.template:
@@ -162,7 +257,7 @@
     # ── Deploy with docker compose ───────────────────────────
     - name: Create compose directory
       ansible.builtin.file:
-        path: "{{ compose_di
+        path: "{{ compose_dir }}"
         state: directory
         mode: "0755"
 
@@ -177,6 +272,20 @@
       args:
         chdir: "{{ compose_dir }}"
       changed_when: true
+
+    - name: Wait 5 seconds for containers to initialize
+      ansible.builtin.pause:
+        seconds: 5
+
+    - name: Show backend container logs (diagnostic)
+      ansible.builtin.command: docker logs backend --tail 20
+      register: backend_logs
+      changed_when: false
+      failed_when: false
+
+    - name: Print backend logs
+      ansible.builtin.debug:
+        msg: "{{ backend_logs.stdout_lines + backend_logs.stderr_lines }}"
 
     # ── Health checks ────────────────────────────────────────
     - name: Wait for backend to be ready

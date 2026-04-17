@@ -77,6 +77,16 @@
         path: /var/opt/mssql
         state: absent
 
+    - name: Remove mssql-server systemd override
+      ansible.builtin.file:
+        path: /etc/systemd/system/mssql-server.service.d
+        state: absent
+
+    - name: Reload systemd after removing override
+      ansible.builtin.systemd:
+        daemon_reload: true
+      failed_when: false
+
     # ── Remove Microsoft apt repositories ───────────────────
     - name: Remove mssql-server apt repo file
       ansible.builtin.file:
