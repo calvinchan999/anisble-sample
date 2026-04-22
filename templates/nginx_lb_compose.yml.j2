@@ -1,0 +1,12 @@
+# Managed by Ansible – do not edit manually
+# Docker Compose for the Nginx failover load balancer on {{ inventory_hostname }}
+
+services:
+  nginx-lb:
+    image: nginx:stable-alpine
+    container_name: nginx-lb
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./lb.conf:/etc/nginx/conf.d/lb.conf:ro

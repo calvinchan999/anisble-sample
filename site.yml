@@ -314,3 +314,87 @@
           - " Open → http://{{ ansible_host }}:{{ frontend_port }}"
           - "========================================"
 
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# PLAY 3 – Deploy Nginx failover load balancer on vm0
+#
+# vm0 acts as the single entry point.
+# Traffic goes to vm1 (primary); if vm1 is unreachable,
+# Nginx automatically fails over to vm2 (backup).
+# Nginx runs as a Docker container (nginx:stable-alpine) via
+# docker compose – consistent with the rest of the stack.
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- name: "PLAY 3 | Deploy Nginx failover load balancer on vm0 (Docker)"
+  hosts: load_balancer
+
+  vars:
+    frontend_port: 80
+    lb_compose_dir: /opt/nginx-lb
+
+  tasks:
+
+    # ── Docker setup ─────────────────────────────────────────
+    - name: Install Docker
+      ansible.builtin.apt:
+        name: docker.io
+        state: present
+        update_cache: true
+
+    - name: Install docker-compose plugin (Ubuntu)
+      ansible.builtin.package:
+        name: docker-compose-v2
+        state: present
+
+    - name: Start and enable Docker
+      ansible.builtin.service:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Add ansible user to docker group
+      ansible.builtin.user:
+        name: "{{ ansible_user }}"
+        groups: docker
+        append: true
+
+    # ── Deploy Nginx via docker compose ──────────────────────
+    - name: Create lb compose directory
+      ansible.builtin.file:
+        path: "{{ lb_compose_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Render Nginx failover config
+      ansible.builtin.template:
+        src: templates/nginx_lb.conf.j2
+        dest: "{{ lb_compose_dir }}/lb.conf"
+        mode: "0644"
+
+    - name: Render docker-compose.yml for nginx-lb
+      ansible.builtin.template:
+        src: templates/nginx_lb_compose.yml.j2
+        dest: "{{ lb_compose_dir }}/docker-compose.yml"
+        mode: "0644"
+
+    - name: Start nginx-lb container with docker compose
+      ansible.builtin.command: docker compose up -d --remove-orphans
+      args:
+        chdir: "{{ lb_compose_dir }}"
+      changed_when: true
+
+    - name: Wait for Nginx LB to be ready (port 80)
+      ansible.builtin.wait_for:
+        port: 80
+        delay: 3
+        timeout: 30
+
+    - name: Print load balancer URL
+      ansible.builtin.debug:
+        msg:
+          - "========================================"
+          - " Nginx failover LB ready on {{ inventory_hostname }}!"
+          - " Entry point → http://{{ ansible_host }}"
+          - " Primary      → vm1 ({{ hostvars['vm1']['ansible_host'] }}:{{ frontend_port }})"
+          - " Failover     → vm2 ({{ hostvars['vm2']['ansible_host'] }}:{{ frontend_port }})"
+          - "========================================"
+

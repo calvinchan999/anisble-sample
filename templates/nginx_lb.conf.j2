@@ -1,0 +1,52 @@
+# Managed by Ansible – do not edit manually
+# Nginx failover load balancer for {{ inventory_hostname }}
+# Traffic → vm1 (primary). If vm1 is down → vm2 (backup).
+#
+# Two upstreams:
+#   app_frontends  – frontend containers on port {{ frontend_port }}
+#   app_backends   – backend API containers on port 3000
+#
+# Browser always talks to vm0 (this LB):
+#   GET /          → app_frontends (serves HTML/JS/CSS)
+#   GET /api/*     → app_backends  (serves JSON API)
+
+upstream app_frontends {
+    server {{ hostvars['vm1']['ansible_host'] }}:{{ frontend_port }};          # primary
+    server {{ hostvars['vm2']['ansible_host'] }}:{{ frontend_port }} backup;   # failover
+}
+
+upstream app_backends {
+    server {{ hostvars['vm1']['ansible_host'] }}:3000;          # primary
+    server {{ hostvars['vm2']['ansible_host'] }}:3000 backup;   # failover
+}
+
+server {
+    listen 80;
+    server_name _;
+
+    # API calls → backend containers (port 3000)
+    location /api/ {
+        proxy_pass          http://app_backends;
+        proxy_set_header    Host              $host;
+        proxy_set_header    X-Real-IP         $remote_addr;
+        proxy_set_header    X-Forwarded-For   $proxy_add_x_forwarded_for;
+
+        proxy_next_upstream error timeout http_502 http_503 http_504;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout    60s;
+        proxy_send_timeout    60s;
+    }
+
+    # Everything else → frontend containers (port {{ frontend_port }})
+    location / {
+        proxy_pass          http://app_frontends;
+        proxy_set_header    Host              $host;
+        proxy_set_header    X-Real-IP         $remote_addr;
+        proxy_set_header    X-Forwarded-For   $proxy_add_x_forwarded_for;
+
+        proxy_next_upstream error timeout http_502 http_503 http_504;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout    60s;
+        proxy_send_timeout    60s;
+    }
+}
