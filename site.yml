@@ -233,11 +233,32 @@
         - { key: net.bridge.bridge-nf-call-ip6tables, value: "1" }
         - { key: net.ipv4.ip_forward,                 value: "1" }
 
+    # Ubuntu 24.04 defaults to nftables; docker.io requires iptables-legacy
+    - name: Install iptables
+      ansible.builtin.apt:
+        name: iptables
+        state: present
+
+    - name: Switch iptables to legacy mode
+      ansible.builtin.command: update-alternatives --set iptables /usr/sbin/iptables-legacy
+      changed_when: false
+      failed_when: false
+
     - name: Start and enable Docker
       ansible.builtin.service:
         name: docker
         state: started
         enabled: true
+
+    - name: Capture Docker journal log (diagnose startup failures)
+      ansible.builtin.command: journalctl -u docker --no-pager -n 30
+      register: docker_journal
+      changed_when: false
+      failed_when: false
+
+    - name: Show Docker journal log
+      ansible.builtin.debug:
+        msg: "{{ docker_journal.stdout_lines }}"
 
     - name: Add ansible user to docker group
       ansible.builtin.user:
@@ -384,11 +405,47 @@
         - { key: net.bridge.bridge-nf-call-ip6tables, value: "1" }
         - { key: net.ipv4.ip_forward,                 value: "1" }
 
+    # Ubuntu 24.04 defaults to nftables; docker.io requires iptables-legacy
+    - name: Install iptables
+      ansible.builtin.apt:
+        name: iptables
+        state: present
+
+    - name: Switch iptables to legacy mode
+      ansible.builtin.command: update-alternatives --set iptables /usr/sbin/iptables-legacy
+      changed_when: false
+      failed_when: false
+
+    # Clean up stale socket/unit state left by previous failed installs
+    - name: Reset any failed systemd units
+      ansible.builtin.command: systemctl reset-failed
+      changed_when: false
+      failed_when: false
+
+    - name: Remove stale Docker socket file if present
+      ansible.builtin.file:
+        path: /var/run/docker.sock
+        state: absent
+
+    - name: Reload systemd daemon
+      ansible.builtin.systemd:
+        daemon_reload: true
+
     - name: Start and enable Docker
       ansible.builtin.service:
         name: docker
         state: started
         enabled: true
+
+    - name: Capture Docker journal log (diagnose startup failures)
+      ansible.builtin.command: journalctl -u docker --no-pager -n 30
+      register: docker_journal
+      changed_when: false
+      failed_when: false
+
+    - name: Show Docker journal log
+      ansible.builtin.debug:
+        msg: "{{ docker_journal.stdout_lines }}"
 
     - name: Add ansible user to docker group
       ansible.builtin.user:
