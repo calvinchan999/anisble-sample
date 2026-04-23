@@ -196,7 +196,6 @@
     sa_pass: "SqlServer@2026!"    # must match PLAY 1
     backend_port: 3000
     frontend_port: 80
-    backend_host: "{{ ansible_host }}"   # VM's real IP – injected into config.js
     compose_dir: /opt/compose
     backend_build_dir: /opt/backend
     frontend_build_dir: /opt/frontend
@@ -213,6 +212,26 @@
       ansible.builtin.package:
         name: docker-compose-v2
         state: present
+
+    - name: Load kernel modules required by Docker
+      community.general.modprobe:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - overlay
+        - br_netfilter
+
+    - name: Apply sysctl settings required by Docker
+      ansible.posix.sysctl:
+        name: "{{ item.key }}"
+        value: "{{ item.value }}"
+        sysctl_set: true
+        state: present
+        reload: true
+      loop:
+        - { key: net.bridge.bridge-nf-call-iptables,  value: "1" }
+        - { key: net.bridge.bridge-nf-call-ip6tables, value: "1" }
+        - { key: net.ipv4.ip_forward,                 value: "1" }
 
     - name: Start and enable Docker
       ansible.builtin.service:
@@ -344,6 +363,26 @@
       ansible.builtin.package:
         name: docker-compose-v2
         state: present
+
+    - name: Load kernel modules required by Docker
+      community.general.modprobe:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - overlay
+        - br_netfilter
+
+    - name: Apply sysctl settings required by Docker
+      ansible.posix.sysctl:
+        name: "{{ item.key }}"
+        value: "{{ item.value }}"
+        sysctl_set: true
+        state: present
+        reload: true
+      loop:
+        - { key: net.bridge.bridge-nf-call-iptables,  value: "1" }
+        - { key: net.bridge.bridge-nf-call-ip6tables, value: "1" }
+        - { key: net.ipv4.ip_forward,                 value: "1" }
 
     - name: Start and enable Docker
       ansible.builtin.service:
