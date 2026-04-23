@@ -141,3 +141,56 @@
           - " Teardown complete on {{ inventory_hostname }}"
           - " You can now re-run: ansible-playbook site.yml"
           - "========================================"
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# PLAY 2 – Remove Nginx LB from vm0
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- name: "TEARDOWN | Remove Nginx LB from vm0"
+  hosts: load_balancer
+
+  tasks:
+
+    # ── Stop + remove nginx-lb container ─────────────────────
+    - name: Stop and remove nginx-lb via docker compose
+      ansible.builtin.command: docker compose down --remove-orphans
+      args:
+        chdir: /opt/nginx-lb
+      failed_when: false
+      changed_when: false
+
+    - name: Remove nginx-lb Docker image
+      ansible.builtin.command: docker rmi -f nginx:stable-alpine
+      failed_when: false
+      changed_when: false
+
+    # ── Remove Docker ────────────────────────────────────────
+    - name: Remove docker-compose-v2 package
+      ansible.builtin.package:
+        name: docker-compose-v2
+        state: absent
+
+    - name: Remove Docker package
+      ansible.builtin.package:
+        name: docker.io
+        state: absent
+
+    - name: Remove Docker data directory
+      ansible.builtin.file:
+        path: /var/lib/docker
+        state: absent
+
+    # ── Remove deployed files ────────────────────────────────
+    - name: Remove /opt/nginx-lb
+      ansible.builtin.file:
+        path: /opt/nginx-lb
+        state: absent
+
+    # ── Done ─────────────────────────────────────────────────
+    - name: Teardown complete
+      ansible.builtin.debug:
+        msg:
+          - "========================================"
+          - " Teardown complete on {{ inventory_hostname }}"
+          - " You can now re-run: ansible-playbook site.yml"
+          - "========================================"
