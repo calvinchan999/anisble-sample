@@ -308,7 +308,7 @@
         mode: "0644"
 
     - name: Start all containers with docker compose
-      ansible.builtin.command: docker compose up -d --remove-orphans
+      ansible.builtin.command: docker compose up -d --remove-orphans --force-recreate
       args:
         chdir: "{{ compose_dir }}"
       changed_when: true
@@ -406,9 +406,11 @@
         - { key: net.ipv4.ip_forward,                 value: "1" }
 
     # Ubuntu 24.04 defaults to nftables; docker.io requires iptables-legacy
-    - name: Install iptables
+    - name: Install iptables and containerd
       ansible.builtin.apt:
-        name: iptables
+        name:
+          - iptables
+          - containerd
         state: present
 
     - name: Switch iptables to legacy mode
@@ -416,11 +418,12 @@
       changed_when: false
       failed_when: false
 
-    # Clean up stale socket/unit state left by previous failed installs
-    - name: Reset any failed systemd units
-      ansible.builtin.command: systemctl reset-failed
+    # Fully stop Docker stack, clear failed state, remove stale socket
+    - name: Stop Docker service and socket (clean slate)
+      ansible.builtin.shell: |
+        systemctl stop docker.service docker.socket 2>/dev/null || true
+        systemctl reset-failed docker.service docker.socket containerd.service 2>/dev/null || true
       changed_when: false
-      failed_when: false
 
     - name: Remove stale Docker socket file if present
       ansible.builtin.file:
@@ -431,14 +434,30 @@
       ansible.builtin.systemd:
         daemon_reload: true
 
+    - name: Start and enable containerd
+      ansible.builtin.service:
+        name: containerd
+        state: started
+        enabled: true
+
+    - name: Start and enable Docker socket
+      ansible.builtin.service:
+        name: docker.socket
+        state: started
+        enabled: true
+
     - name: Start and enable Docker
       ansible.builtin.service:
         name: docker
         state: started
         enabled: true
+      register: docker_start
+      failed_when: false
 
-    - name: Capture Docker journal log (diagnose startup failures)
-      ansible.builtin.command: journalctl -u docker --no-pager -n 30
+    - name: Capture Docker and containerd journal logs
+      ansible.builtin.shell: |
+        echo "=== docker.service ===" && journalctl -u docker.service --no-pager -n 30
+        echo "=== containerd.service ===" && journalctl -u containerd.service --no-pager -n 10
       register: docker_journal
       changed_when: false
       failed_when: false
@@ -446,6 +465,17 @@
     - name: Show Docker journal log
       ansible.builtin.debug:
         msg: "{{ docker_journal.stdout_lines }}"
+
+    - name: Wait for Docker socket to be available
+      ansible.builtin.wait_for:
+        path: /var/run/docker.sock
+        state: present
+        timeout: 60
+
+    - name: Verify Docker is operational
+      ansible.builtin.command: docker info
+      register: docker_info
+      changed_when: false
 
     - name: Add ansible user to docker group
       ansible.builtin.user:
@@ -483,6 +513,25 @@
         port: 80
         delay: 3
         timeout: 30
+
+    - name: Show nginx-lb container status
+      ansible.builtin.command: docker ps -a --filter name=nginx-lb
+      register: nginx_status
+      changed_when: false
+
+    - name: Print nginx-lb container status
+      ansible.builtin.debug:
+        msg: "{{ nginx_status.stdout_lines }}"
+
+    - name: Show nginx-lb container logs
+      ansible.builtin.command: docker logs nginx-lb --tail 50
+      register: nginx_logs
+      changed_when: false
+      failed_when: false
+
+    - name: Print nginx-lb logs
+      ansible.builtin.debug:
+        msg: "{{ nginx_logs.stdout_lines + nginx_logs.stderr_lines }}"
 
     - name: Print load balancer URL
       ansible.builtin.debug:

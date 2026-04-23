@@ -3,15 +3,9 @@
 
 services:
   nginx-lb:
-    image: nginx:stable-alpine
+    image: nginx:alpine
     container_name: nginx-lb
     restart: unless-stopped
-    ports:
-      - "80:80"
+    network_mode: host
     volumes:
-      - ./lb.conf:/etc/nginx/conf.d/lb.conf:ro
-    # Remove the built-in default.conf so our lb.conf is the only server block.
-    # Without this, nginx picks default.conf (server_name localhost) over our
-    # catch-all (server_name _) and serves the default page instead of proxying.
-    command: >
-      sh -c "rm -f /etc/nginx/conf.d/default.conf && exec nginx -g 'daemon off;'"
+      - ./lb.conf:/etc/nginx/conf.d/default.conf:ro
