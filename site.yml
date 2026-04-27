@@ -17,12 +17,15 @@
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 - name: "PLAY 1 | Install SQL Server on all VMs"
   hosts: all_vms
+  become: true
+  vars_files:
+    - vars.yml
 
   vars:
     db_name: appdb
     db_user: appuser
-    db_pass: apppass
-    sa_pass: "SqlServer@2026!"    # SA password – must meet complexity requirements
+    db_pass: P@ssw0rd
+    # sa_pass and mssql_pid are loaded from vars.yml
 
   tasks:
 
@@ -127,6 +130,12 @@
           [sqlagent]
           enabled = false
 
+          [network]
+          forceencryption = 1
+
+          [security]
+          enablesqlauthentication = 1
+
     # Pass SA password via systemd environment override
     # so it is set before SQL Server starts for the first time
     - name: Create systemd override directory for mssql-server
@@ -142,7 +151,7 @@
         content: |
           [Service]
           Environment=MSSQL_SA_PASSWORD={{ sa_pass }}
-          Environment=MSSQL_PID=Developer
+          Environment=MSSQL_PID={{ mssql_pid }}
           Environment=ACCEPT_EULA=Y
 
     - name: Reload systemd daemon
@@ -152,7 +161,7 @@
     - name: Start and enable SQL Server
       ansible.builtin.service:
         name: mssql-server
-        state: started
+        state: restarted
         enabled: true
 
     # Show journal log immediately – helps diagnose startup failures
@@ -183,16 +192,18 @@
       changed_when: false
 
 
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # PLAY 2 – Build images + start all containers via docker compose
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 - name: "PLAY 2 | Deploy containers on all VMs"
   hosts: all_vms
+  become: true
 
   vars:
     db_name: appdb
     db_user: appuser
-    db_pass: apppass
+    db_pass: P@ssw0rd
     sa_pass: "SqlServer@2026!"    # must match PLAY 1
     backend_port: 3000
     frontend_port: 80
@@ -234,9 +245,11 @@
         - { key: net.ipv4.ip_forward,                 value: "1" }
 
     # Ubuntu 24.04 defaults to nftables; docker.io requires iptables-legacy
-    - name: Install iptables
+    - name: Install iptables and containerd
       ansible.builtin.apt:
-        name: iptables
+        name:
+          - iptables
+          - containerd
         state: present
 
     - name: Switch iptables to legacy mode
@@ -244,14 +257,43 @@
       changed_when: false
       failed_when: false
 
+    - name: Stop Docker service and socket (clean slate)
+      ansible.builtin.shell: |
+        systemctl stop docker.service docker.socket 2>/dev/null || true
+        systemctl reset-failed docker.service docker.socket containerd.service 2>/dev/null || true
+      changed_when: false
+
+    - name: Remove stale Docker socket file if present
+      ansible.builtin.file:
+        path: /var/run/docker.sock
+        state: absent
+
+    - name: Reload systemd daemon
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Start and enable containerd
+      ansible.builtin.service:
+        name: containerd
+        state: started
+        enabled: true
+
+    - name: Start and enable Docker socket
+      ansible.builtin.service:
+        name: docker.socket
+        state: started
+        enabled: true
+
     - name: Start and enable Docker
       ansible.builtin.service:
         name: docker
         state: started
         enabled: true
 
-    - name: Capture Docker journal log (diagnose startup failures)
-      ansible.builtin.command: journalctl -u docker --no-pager -n 30
+    - name: Capture Docker and containerd journal logs
+      ansible.builtin.shell: |
+        echo "=== docker.service ===" && journalctl -u docker.service --no-pager -n 30
+        echo "=== containerd.service ===" && journalctl -u containerd.service --no-pager -n 10
       register: docker_journal
       changed_when: false
       failed_when: false
@@ -306,6 +348,39 @@
         src: templates/compose.yml.j2
         dest: "{{ compose_dir }}/docker-compose.yml"
         mode: "0644"
+
+    # ── Firewall ──────────────────────────────────────────────
+    - name: Allow SSH through UFW
+      ansible.builtin.command: ufw allow 22/tcp
+      changed_when: false
+      failed_when: false
+
+    - name: Allow frontend port through UFW
+      ansible.builtin.command: ufw allow {{ frontend_port }}/tcp
+      changed_when: false
+      failed_when: false
+
+    - name: Allow backend port through UFW
+      ansible.builtin.command: ufw allow {{ backend_port }}/tcp
+      changed_when: false
+      failed_when: false
+
+    - name: Allow SQL Server port through UFW
+      ansible.builtin.command: ufw allow 1433/tcp
+      changed_when: false
+      failed_when: false
+
+    - name: Enable UFW
+      ansible.builtin.command: ufw --force enable
+      changed_when: false
+      failed_when: false
+
+    # UFW changes earlier in this play may have flushed iptables chains.
+    # Restarting Docker forces it to rebuild the DOCKER NAT chain before compose up.
+    - name: Restart Docker to rebuild iptables chains
+      ansible.builtin.service:
+        name: docker
+        state: restarted
 
     - name: Start all containers with docker compose
       ansible.builtin.command: docker compose up -d --remove-orphans --force-recreate
@@ -366,6 +441,7 @@
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 - name: "PLAY 3 | Deploy Nginx failover load balancer on vm0 (Docker)"
   hosts: load_balancer
+  become: true
 
   vars:
     frontend_port: 80
@@ -482,6 +558,45 @@
         name: "{{ ansible_user }}"
         groups: docker
         append: true
+
+    # ── Firewall ──────────────────────────────────────────────
+    - name: Allow SSH through UFW
+      ansible.builtin.command: ufw allow 22/tcp
+      changed_when: false
+      failed_when: false
+
+    - name: Allow HTTP (port 80) through UFW
+      ansible.builtin.command: ufw allow 80/tcp
+      changed_when: false
+      failed_when: false
+
+    - name: Allow HTTPS (port 443) through UFW
+      ansible.builtin.command: ufw allow 443/tcp
+      changed_when: false
+      failed_when: false
+
+    - name: Enable UFW
+      ansible.builtin.command: ufw --force enable
+      changed_when: false
+      failed_when: false
+
+    # ── TLS certificate ───────────────────────────────────────
+    - name: Create certs directory
+      ansible.builtin.file:
+        path: "{{ lb_compose_dir }}/certs"
+        state: directory
+        mode: "0755"
+
+    - name: Generate self-signed SSL certificate
+      ansible.builtin.command: >
+        openssl req -x509 -nodes -days 3650 -newkey rsa:2048
+        -keyout {{ lb_compose_dir }}/certs/lb.key
+        -out {{ lb_compose_dir }}/certs/lb.crt
+        -subj "/CN={{ ansible_host }}/O=Lab/C=US"
+        -addext "subjectAltName=IP:{{ ansible_host }}"
+      args:
+        creates: "{{ lb_compose_dir }}/certs/lb.crt"
+      changed_when: true
 
     # ── Deploy Nginx via docker compose ──────────────────────
     - name: Create lb compose directory

@@ -1,0 +1,3 @@
+# vars.yml.example – copy to vars.yml and fill in real values
+sa_pass: "CHANGE_ME"
+mssql_pid: Developer

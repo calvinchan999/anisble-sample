@@ -15,6 +15,7 @@
 
 - name: "TEARDOWN | Remove all deployed resources"
   hosts: all_vms
+  become: true
 
   tasks:
 
@@ -148,6 +149,7 @@
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 - name: "TEARDOWN | Remove Nginx LB from vm0"
   hosts: load_balancer
+  become: true
 
   tasks:
 
@@ -160,7 +162,7 @@
       changed_when: false
 
     - name: Remove nginx-lb Docker image
-      ansible.builtin.command: docker rmi -f nginx:stable-alpine
+      ansible.builtin.command: docker rmi -f nginx:alpine
       failed_when: false
       changed_when: false
 

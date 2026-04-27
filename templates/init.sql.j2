@@ -9,19 +9,30 @@ GO
 USE {{ db_name }};
 GO
 
--- Create login (server-level)
+-- Create or update login (server-level)
 IF NOT EXISTS (SELECT name FROM sys.server_principals WHERE name = '{{ db_user }}')
 BEGIN
     CREATE LOGIN {{ db_user }} WITH PASSWORD = '{{ db_pass }}';
 END
+ELSE
+BEGIN
+    ALTER LOGIN {{ db_user }} WITH PASSWORD = '{{ db_pass }}';
+    ALTER LOGIN {{ db_user }} ENABLE;
+END
+GO
+
+USE {{ db_name }};
 GO
 
 -- Create user mapped to login (database-level)
 IF NOT EXISTS (SELECT name FROM sys.database_principals WHERE name = '{{ db_user }}')
 BEGIN
     CREATE USER {{ db_user }} FOR LOGIN {{ db_user }};
-    ALTER ROLE db_owner ADD MEMBER {{ db_user }};
 END
+GO
+
+-- Grant least-privilege permissions (not db_owner)
+GRANT SELECT, INSERT, UPDATE, DELETE ON SCHEMA::dbo TO {{ db_user }};
 GO
 
 -- Create users table if it does not exist
@@ -32,8 +43,12 @@ BEGIN
         name  NVARCHAR(100) NOT NULL,
         email NVARCHAR(100) NOT NULL
     );
+END
+GO
 
-    -- Seed data
+-- Seed data – only insert if table is empty
+IF NOT EXISTS (SELECT 1 FROM users)
+BEGIN
     INSERT INTO users (name, email) VALUES ('Alice',   'alice@example.com');
     INSERT INTO users (name, email) VALUES ('Bob',     'bob@example.com');
     INSERT INTO users (name, email) VALUES ('Charlie', 'charlie@example.com');

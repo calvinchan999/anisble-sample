@@ -14,11 +14,11 @@ const dbConfig = {
   server  : process.env.DB_HOST || '127.0.0.1',
   port    : parseInt(process.env.DB_PORT || '1433'),
   user    : process.env.DB_USER || 'appuser',
-  password: process.env.DB_PASS || 'apppass',
+  password: process.env.DB_PASS || 'P@ssw0rd',
   database: process.env.DB_NAME || 'appdb',
   options : {
     trustServerCertificate: true,   // required for self-signed certs (dev/lab)
-    encrypt: false,
+    encrypt              : process.env.DB_ENCRYPT === 'true',
   },
 };
 

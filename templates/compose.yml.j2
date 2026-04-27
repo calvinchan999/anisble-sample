@@ -16,10 +16,11 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      DB_HOST: "host.docker.internal"  # resolves to the host via Docker's host-gateway
+      DB_HOST: "host.docker.internal"
       DB_PORT: "1433"
       DB_USER: "{{ db_user }}"
       DB_PASS: "{{ db_pass }}"
       DB_NAME: "{{ db_name }}"
+      DB_ENCRYPT: "true"
     ports:
       - "{{ backend_port }}:3000"
